@@ -58,13 +58,15 @@ etl submit --course-id 123 --assignment-id 456 \
   --file ./hw2.pdf --filename 2025-12345_hw2.pdf --dry-run
 etl submit --course-id 123 --assignment-id 456 \
   --file ./hw2.pdf --filename 2025-12345_hw2.pdf --yes
+etl submit --assignment-url 'https://myetl.snu.ac.kr/courses/123/assignments/456' \
+  --file ./hw2.pdf --dry-run
 ```
 
 Requirements:
 
 - Use numeric IDs in automation so duplicate or changing course titles cannot select the wrong destination.
 - Keep output stable: human-readable by default and JSON via `--json`; send diagnostics to stderr and define documented exit codes.
-- Require explicit course, assignment, and file arguments in script mode. `--dry-run` validates the file and assignment without uploading. An optional `--yes` can suppress an interactive confirmation when deliberately used by a script.
+- For submission, require `--file` and either both numeric IDs or `--assignment-url`. The URL form extracts IDs from an HTTPS eTL assignment page and does not change the fixed API host. `--dry-run` validates without uploading; `--yes` suppresses interactive confirmation for scripts.
 - Never silently retry a submission after an uncertain response. First query the latest submission state and distinguish success from an unsubmitted upload.
 - Report course and assignment names/IDs, local path, remote filename, submission attempt, timestamp, and a link or status when available.
 
@@ -108,6 +110,7 @@ Start with a line-oriented prompt interface; add a full-screen TUI only if the i
 ### Phase 2 — Safe file submission (implemented and exercised once)
 
 - Added `submit` with course/assignment IDs, local path, optional remote `--filename`, `--dry-run`, interactive confirmation, `--yes`, JSON output, and explicit `--resubmit` override.
+- Also accepts `--assignment-url` as an alternative destination input, extracting numeric IDs only from the expected eTL assignment-page path.
 - Refuses incompatible assignment types, disallowed extensions, and existing submissions by default. Does not alter the source file.
 - Implements Canvas's documented file-upload handshake, makes at most one final submission request per invocation, and verifies the resulting attempt and attachment.
 - Submitted `src.zip` to PA1 after rechecking that the current submission remained unsubmitted. eTL returned a matching receipt for attempt 1. No second submission request was sent. The CLI does not automatically retry an ambiguous submission request.

@@ -12,6 +12,7 @@ use api::{ApiError, Client};
 use clap::{Parser, Subcommand};
 use models::Assignment;
 use serde::Serialize;
+use url::Url;
 
 #[derive(Debug, Parser)]
 #[command(name = "etl", version, about = "A personal CLI for SNU eTL")]
@@ -36,10 +37,25 @@ enum Command {
     },
     /// Upload a file and submit it to an assignment.
     Submit {
-        #[arg(long)]
-        course_id: u64,
-        #[arg(long)]
-        assignment_id: u64,
+        #[arg(
+            long,
+            requires = "assignment_id",
+            required_unless_present = "assignment_url"
+        )]
+        course_id: Option<u64>,
+        #[arg(
+            long,
+            requires = "course_id",
+            required_unless_present = "assignment_url"
+        )]
+        assignment_id: Option<u64>,
+        /// Assignment page URL; its course and assignment IDs are extracted.
+        #[arg(
+            long,
+            value_name = "URL",
+            conflicts_with_all = ["course_id", "assignment_id"]
+        )]
+        assignment_url: Option<String>,
         #[arg(long)]
         file: PathBuf,
         /// Filename to show in eTL. The local file is not renamed.
@@ -105,32 +121,97 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), AppError> {
     let cli = Cli::parse();
-    let api = Client::from_env()?;
 
     match cli.command {
-        Command::Courses { json } => list_courses(&api, json),
-        Command::Assignments { course_id, json } => list_assignments(&api, course_id, json),
+        Command::Courses { json } => list_courses(&Client::from_env()?, json),
+        Command::Assignments { course_id, json } => {
+            list_assignments(&Client::from_env()?, course_id, json)
+        }
         Command::Submit {
             course_id,
             assignment_id,
+            assignment_url,
             file,
             filename,
             dry_run,
             yes,
             resubmit,
             json,
-        } => submit(
-            &api,
-            course_id,
-            assignment_id,
-            &file,
-            filename.as_deref(),
-            dry_run,
-            yes,
-            resubmit,
-            json,
-        ),
+        } => {
+            let (course_id, assignment_id) =
+                resolve_destination(course_id, assignment_id, assignment_url.as_deref())?;
+            submit(
+                &Client::from_env()?,
+                course_id,
+                assignment_id,
+                &file,
+                filename.as_deref(),
+                dry_run,
+                yes,
+                resubmit,
+                json,
+            )
+        }
     }
+}
+
+fn resolve_destination(
+    course_id: Option<u64>,
+    assignment_id: Option<u64>,
+    assignment_url: Option<&str>,
+) -> Result<(u64, u64), AppError> {
+    match (course_id, assignment_id, assignment_url) {
+        (Some(course_id), Some(assignment_id), None) => Ok((course_id, assignment_id)),
+        (None, None, Some(assignment_url)) => parse_assignment_url(assignment_url),
+        (Some(_), _, Some(_)) | (_, Some(_), Some(_)) => Err(AppError::Validation(
+            "use either --assignment-url or both --course-id and --assignment-id, not both"
+                .to_owned(),
+        )),
+        (None, None, None) => Err(AppError::Validation(
+            "provide --assignment-url or both --course-id and --assignment-id".to_owned(),
+        )),
+        _ => Err(AppError::Validation(
+            "--course-id and --assignment-id must be provided together".to_owned(),
+        )),
+    }
+}
+
+fn parse_assignment_url(input: &str) -> Result<(u64, u64), AppError> {
+    let url =
+        Url::parse(input).map_err(|_| AppError::Validation("invalid assignment URL".to_owned()))?;
+    if url.scheme() != "https"
+        || url.host_str() != Some("myetl.snu.ac.kr")
+        || url.port_or_known_default() != Some(443)
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return Err(AppError::Validation(
+            "assignment URL must use https://myetl.snu.ac.kr".to_owned(),
+        ));
+    }
+
+    let path_segments = url
+        .path_segments()
+        .ok_or_else(|| AppError::Validation("invalid assignment URL path".to_owned()))?
+        .collect::<Vec<_>>();
+    let path_segments = path_segments.strip_suffix(&[""]).unwrap_or(&path_segments);
+    if path_segments.len() != 4
+        || path_segments[0] != "courses"
+        || path_segments[2] != "assignments"
+    {
+        return Err(AppError::Validation(
+            "assignment URL path must be /courses/{course_id}/assignments/{assignment_id}"
+                .to_owned(),
+        ));
+    }
+
+    let course_id = path_segments[1].parse::<u64>().map_err(|_| {
+        AppError::Validation("course ID in assignment URL must be numeric".to_owned())
+    })?;
+    let assignment_id = path_segments[3].parse::<u64>().map_err(|_| {
+        AppError::Validation("assignment ID in assignment URL must be numeric".to_owned())
+    })?;
+    Ok((course_id, assignment_id))
 }
 
 fn list_courses(api: &Client, json: bool) -> Result<(), AppError> {
@@ -461,4 +542,116 @@ fn extension_list(assignment: &Assignment) -> String {
 
 fn display_opt(value: Option<&str>) -> &str {
     value.unwrap_or("-")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const EXAMPLE_URL: &str = "https://myetl.snu.ac.kr/courses/305887/assignments/381293";
+
+    #[test]
+    fn parses_assignment_page_url() {
+        assert_eq!(parse_assignment_url(EXAMPLE_URL).unwrap(), (305887, 381293));
+    }
+
+    #[test]
+    fn accepts_trailing_slash_query_and_fragment() {
+        let url = format!("{EXAMPLE_URL}/?module_item_id=42#details");
+        assert_eq!(parse_assignment_url(&url).unwrap(), (305887, 381293));
+    }
+
+    #[test]
+    fn rejects_urls_outside_the_expected_assignment_route() {
+        let invalid_urls = [
+            "http://myetl.snu.ac.kr/courses/305887/assignments/381293",
+            "https://example.com/courses/305887/assignments/381293",
+            "https://myetl.snu.ac.kr.evil.test/courses/305887/assignments/381293",
+            "https://myetl.snu.ac.kr/courses/nope/assignments/381293",
+            "https://myetl.snu.ac.kr/courses/305887/assignments/nope",
+            "https://myetl.snu.ac.kr/courses/305887/assignments/381293/submissions",
+            "https://user@myetl.snu.ac.kr/courses/305887/assignments/381293",
+            "https://myetl.snu.ac.kr:8443/courses/305887/assignments/381293",
+        ];
+
+        for url in invalid_urls {
+            assert!(
+                parse_assignment_url(url).is_err(),
+                "accepted invalid URL: {url}"
+            );
+        }
+    }
+
+    #[test]
+    fn cli_accepts_url_and_existing_id_destination_forms() {
+        let url_cli = Cli::try_parse_from([
+            "etl",
+            "submit",
+            "--assignment-url",
+            EXAMPLE_URL,
+            "--file",
+            "hw.zip",
+        ])
+        .unwrap();
+        let Command::Submit {
+            course_id,
+            assignment_id,
+            assignment_url,
+            ..
+        } = url_cli.command
+        else {
+            panic!("expected submit command");
+        };
+        assert_eq!(
+            resolve_destination(course_id, assignment_id, assignment_url.as_deref()).unwrap(),
+            (305887, 381293)
+        );
+
+        let ids_cli = Cli::try_parse_from([
+            "etl",
+            "submit",
+            "--course-id",
+            "305887",
+            "--assignment-id",
+            "381293",
+            "--file",
+            "hw.zip",
+        ])
+        .unwrap();
+        let Command::Submit {
+            course_id,
+            assignment_id,
+            assignment_url,
+            ..
+        } = ids_cli.command
+        else {
+            panic!("expected submit command");
+        };
+        assert_eq!(
+            resolve_destination(course_id, assignment_id, assignment_url.as_deref()).unwrap(),
+            (305887, 381293)
+        );
+    }
+
+    #[test]
+    fn cli_rejects_mixed_or_incomplete_destination_arguments() {
+        assert!(
+            Cli::try_parse_from([
+                "etl",
+                "submit",
+                "--assignment-url",
+                EXAMPLE_URL,
+                "--course-id",
+                "305887",
+                "--file",
+                "hw.zip",
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from(["etl", "submit", "--course-id", "305887", "--file", "hw.zip",])
+                .is_err()
+        );
+        assert!(Cli::try_parse_from(["etl", "submit", "--file", "hw.zip"]).is_err());
+    }
 }
