@@ -1,14 +1,16 @@
 mod api;
+mod auth;
 mod models;
 
 use std::{
     fs,
-    io::{self, IsTerminal, Write},
+    io::{self, IsTerminal, Read, Write},
     path::{Path, PathBuf},
     process::ExitCode,
 };
 
 use api::{ApiError, Client};
+use auth::AuthError;
 use clap::{Parser, Subcommand};
 use models::Assignment;
 use serde::Serialize;
@@ -23,6 +25,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Manage the saved eTL token.
+    Auth {
+        #[command(subcommand)]
+        command: AuthCommand,
+    },
     /// List active student courses.
     Courses {
         #[arg(long)]
@@ -75,16 +82,30 @@ enum Command {
     },
 }
 
+#[derive(Debug, Subcommand)]
+enum AuthCommand {
+    /// Read a token from stdin, validate it, and save it.
+    Login,
+    /// Remove the saved token.
+    Logout,
+    /// Check the effective token with one read-only request.
+    Status,
+}
+
 #[derive(Debug, thiserror::Error)]
 enum AppError {
     #[error("{0}")]
     Validation(String),
     #[error(transparent)]
     Api(#[from] ApiError),
+    #[error(transparent)]
+    Auth(#[from] AuthError),
     #[error("could not read local file: {0}")]
     Io(#[from] std::io::Error),
     #[error("could not format JSON output: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("status already reported")]
+    Reported(u8),
 }
 
 impl AppError {
@@ -92,7 +113,9 @@ impl AppError {
         match self {
             Self::Validation(_) | Self::Io(_) => 2,
             Self::Api(error) => error.exit_code(),
+            Self::Auth(error) => error.exit_code(),
             Self::Json(_) => 4,
+            Self::Reported(code) => i32::from(*code),
         }
     }
 }
@@ -112,6 +135,7 @@ struct SubmitOutput<'a> {
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
+        Err(AppError::Reported(code)) => ExitCode::from(code),
         Err(error) => {
             eprintln!("error: {error}");
             ExitCode::from(error.exit_code() as u8)
@@ -123,9 +147,14 @@ fn run() -> Result<(), AppError> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Courses { json } => list_courses(&Client::from_env()?, json),
+        Command::Auth { command } => match command {
+            AuthCommand::Login => auth_login(),
+            AuthCommand::Logout => auth_logout(),
+            AuthCommand::Status => auth_status(),
+        },
+        Command::Courses { json } => list_courses(&authenticated_client()?, json),
         Command::Assignments { course_id, json } => {
-            list_assignments(&Client::from_env()?, course_id, json)
+            list_assignments(&authenticated_client()?, course_id, json)
         }
         Command::Submit {
             course_id,
@@ -141,7 +170,7 @@ fn run() -> Result<(), AppError> {
             let (course_id, assignment_id) =
                 resolve_destination(course_id, assignment_id, assignment_url.as_deref())?;
             submit(
-                &Client::from_env()?,
+                &authenticated_client()?,
                 course_id,
                 assignment_id,
                 &file,
@@ -153,6 +182,73 @@ fn run() -> Result<(), AppError> {
             )
         }
     }
+}
+
+fn authenticated_client() -> Result<Client, AppError> {
+    Ok(Client::with_token(auth::resolve_token()?.value)?)
+}
+
+fn read_login_token() -> Result<String, AppError> {
+    let raw = if io::stdin().is_terminal() {
+        rpassword::prompt_password("eTL token: ")?
+    } else {
+        let mut input = String::new();
+        io::stdin().read_to_string(&mut input)?;
+        input
+    };
+    Ok(auth::parse_token_input(&raw)?.to_owned())
+}
+
+fn auth_login() -> Result<(), AppError> {
+    let token = read_login_token()?;
+    let path = auth::credentials_path()?;
+    Client::with_token(token.clone())?.validate_token()?;
+    auth::save_credentials(&path, &token)?;
+    println!("Token validated and saved.");
+    if auth::environment_override_present() {
+        println!("ETL_TOKEN is set and will continue to override the saved token.");
+    }
+    Ok(())
+}
+
+fn auth_logout() -> Result<(), AppError> {
+    let removed = auth::delete_credentials(&auth::credentials_path()?)?;
+    println!(
+        "{}",
+        if removed {
+            "Saved token removed."
+        } else {
+            "No saved token was present."
+        }
+    );
+    if auth::environment_override_present() {
+        println!("ETL_TOKEN remains set and will continue to authenticate requests.");
+    }
+    Ok(())
+}
+
+fn auth_status() -> Result<(), AppError> {
+    let resolved = match auth::resolve_token() {
+        Ok(token) => token,
+        Err(AuthError::MissingToken) => {
+            println!("Token: absent.\nValidity: not checked.");
+            return Err(AppError::Reported(3));
+        }
+        Err(error) => return Err(error.into()),
+    };
+    println!("Token: present (source: {}).", resolved.source);
+    match Client::with_token(resolved.value)?.validate_token() {
+        Ok(()) => println!("Validity: valid."),
+        Err(ApiError::Auth(status)) => {
+            println!("Validity: invalid (HTTP {status}).");
+            return Err(AppError::Reported(3));
+        }
+        Err(error) => {
+            println!("Validity: unavailable ({error}).");
+            return Err(AppError::Reported(4));
+        }
+    }
+    Ok(())
 }
 
 fn resolve_destination(

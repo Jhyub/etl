@@ -41,7 +41,7 @@ The documented submission API only accepts a submission type allowed by that ass
 
 Canvas's API accepts a bearer access token. Its documentation describes manually generated access tokens as a way to test an application before OAuth is implemented, says tokens are password-equivalent, and says applications used by multiple users must use OAuth. This project excludes OAuth and is scoped to the user's personal account. The supplied token worked for that account, but this does not establish whether SNU allows general token generation or broader use. [Canvas authentication and manual token generation](https://canvas.instructure.com/doc/api/file.oauth.html)
 
-The token the user provided was accepted by `GET /api/v1/courses` and the course assignment list. It was also used for the single, explicitly authorized PA1 submission described below. This confirms the API flow for this account and assignment; it does not establish SNU's general policy for API tokens. The persistent CLI reads `ETL_TOKEN` from the process environment only. The ignored `.env` was used externally to provide the token for the one-time check; the CLI itself does not parse `.env` files. Do not build around guessed SSO endpoints, store the MySNU password, or extract browser cookies.
+The token the user provided was accepted by `GET /api/v1/courses` and the course assignment list. It was also used for the single, explicitly authorized PA1 submission described below. This confirms the API flow for this account and assignment; it does not establish SNU's general policy for API tokens. The CLI accepts a saved personal token or `ETL_TOKEN`; it does not parse `.env` files. Do not build around guessed SSO endpoints, store the MySNU password, or extract browser cookies.
 
 Do not distribute this as a multi-user service or ask classmates to create tokens for it. The Canvas documentation's policy boundary means the OAuth exclusion constrains the intended scope to personal use unless SNU provides another approved authentication method.
 
@@ -52,6 +52,9 @@ Do not distribute this as a multi-user service or ask classmates to create token
 Command name: `etl`.
 
 ```sh
+etl auth login   # reads a token from stdin; prompts without echo on a terminal
+etl auth status  # checks the active token with one read-only request
+etl auth logout  # removes the saved token
 etl courses --json
 etl assignments --course-id 123 --json
 etl submit --course-id 123 --assignment-id 456 \
@@ -69,6 +72,10 @@ Requirements:
 - For submission, require `--file` and either both numeric IDs or `--assignment-url`. The URL form extracts IDs from an HTTPS eTL assignment page and does not change the fixed API host. `--dry-run` validates without uploading; `--yes` suppresses interactive confirmation for scripts.
 - Never silently retry a submission after an uncertain response. First query the latest submission state and distinguish success from an unsubmitted upload.
 - Report course and assignment names/IDs, local path, remote filename, submission attempt, timestamp, and a link or status when available.
+
+Authentication uses a single credentials file under the platform's local user data directory: `$XDG_DATA_HOME/etl/credentials` on Linux (default `~/.local/share/etl/credentials`), `~/Library/Application Support/etl/credentials` on macOS, and the `etl/credentials` directory under Local AppData on Windows. `etl auth login` validates the stdin token through one `GET /api/v1/courses?per_page=1` request before saving it. A piped token should contain one line; terminal input is hidden. On Unix, the app directory is mode `0700` and the file is mode `0600`.
+
+A nonempty `ETL_TOKEN` overrides the saved token. If the variable is empty or absent, commands use the credentials file. `etl auth status` reports which source is active and whether eTL accepts it; an invalid environment token does not trigger a retry with the saved token. `etl auth logout` deletes only the saved file and cannot unset an environment variable. Status exits with code 0 for a valid token, 3 for missing or rejected credentials, and 4 for a request or file error. The CLI never prints token contents.
 
 ### Interactive mode
 
@@ -88,7 +95,7 @@ Start with a line-oriented prompt interface; add a full-screen TUI only if the i
 - **CLI layer:** argument parsing, interactive prompts, JSON/human output, and exit codes.
 - **Application layer:** list courses/assignments, validate an assignment/file pair, run a dry-run, submit, and verify the result.
 - **Canvas client:** pagination, assignment/submission retrieval, upload handshake, upload completion, and submission creation. Keep API calls fixed to `https://myetl.snu.ac.kr` by default; send file bytes only to the exact upload URL returned by eTL, without forwarding the eTL bearer token there.
-- **Auth provider:** read `ETL_TOKEN` from the process environment. Never print it, put it in a URL, or include it in logs/errors. The one-time check may use the ignored `.env` outside the CLI; the application itself does not load that file.
+- **Auth provider:** use a nonempty `ETL_TOKEN` first, then the private credentials file in the OS local data directory. Never print the token, put it in a URL, or include it in logs/errors. The application does not load `.env` files.
 - **Local file selection:** inspect only current-directory files for the interactive picker; validate regular-file status, readability, size, and allowed extension before starting upload.
 
 ## Roadmap
@@ -104,7 +111,7 @@ Start with a line-oriented prompt interface; add a full-screen TUI only if the i
 ### Phase 1 — Read-only scriptable CLI (implemented)
 
 - Implemented the Rust 2024 `etl` binary with `clap`, blocking `reqwest`/Rustls, and `serde`/`serde_json`.
-- Reads `ETL_TOKEN` from the environment; provides `courses` and `assignments --course-id ID` with human and JSON output, pagination, and stable exit codes.
+- Reads `ETL_TOKEN` or the saved credentials file; provides `courses` and `assignments --course-id ID` with human and JSON output, pagination, and stable exit codes.
 - Surfaces assignment type, due/lock information, allowed extensions, allowed attempts, current submission status, and IDs.
 
 ### Phase 2 — Safe file submission (implemented and exercised once)

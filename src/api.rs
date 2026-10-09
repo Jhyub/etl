@@ -16,8 +16,6 @@ const API_HOST: &str = "myetl.snu.ac.kr";
 
 #[derive(Debug, thiserror::Error)]
 pub enum ApiError {
-    #[error("ETL_TOKEN is not set")]
-    MissingToken,
     #[error("HTTP request failed")]
     Request(#[from] reqwest::Error),
     #[error("eTL rejected the token or request (HTTP {0})")]
@@ -37,7 +35,7 @@ pub enum ApiError {
 impl ApiError {
     pub fn exit_code(&self) -> i32 {
         match self {
-            Self::MissingToken | Self::Auth(_) => 3,
+            Self::Auth(_) => 3,
             Self::Io(_) => 2,
             _ => 4,
         }
@@ -63,12 +61,7 @@ pub struct Client {
 }
 
 impl Client {
-    pub fn from_env() -> Result<Self, ApiError> {
-        let token = std::env::var("ETL_TOKEN").map_err(|_| ApiError::MissingToken)?;
-        if token.trim().is_empty() {
-            return Err(ApiError::MissingToken);
-        }
-
+    pub fn with_token(token: String) -> Result<Self, ApiError> {
         let api_http = HttpClient::builder()
             .redirect(Policy::none())
             .connect_timeout(Duration::from_secs(15))
@@ -87,6 +80,14 @@ impl Client {
             upload_http,
             base_url: Url::parse(BASE_URL).map_err(|e| ApiError::InvalidResponse(e.to_string()))?,
         })
+    }
+
+    /// Check one read-only endpoint without following pagination links.
+    pub fn validate_token(&self) -> Result<(), ApiError> {
+        let mut url = self.api_url("api/v1/courses")?;
+        url.query_pairs_mut().append_pair("per_page", "1");
+        let _: Vec<Course> = self.get_json(url)?;
+        Ok(())
     }
 
     pub fn list_courses(&self) -> Result<Vec<Course>, ApiError> {
