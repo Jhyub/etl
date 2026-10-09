@@ -199,18 +199,19 @@ impl Client {
         Ok(uploaded.id)
     }
 
-    pub fn submit_file_id(
+    pub fn submit_file_ids(
         &self,
         course_id: u64,
         assignment_id: u64,
-        file_id: u64,
+        file_ids: &[u64],
     ) -> Result<(), ApiError> {
         let url = self.api_url(&format!(
             "api/v1/courses/{course_id}/assignments/{assignment_id}/submissions"
         ))?;
-        let form = multipart::Form::new()
-            .text("submission[submission_type]", "online_upload")
-            .text("submission[file_ids][]", file_id.to_string());
+        let mut form = multipart::Form::new().text("submission[submission_type]", "online_upload");
+        for file_id in file_ids {
+            form = form.text("submission[file_ids][]", file_id.to_string());
+        }
         let response = self
             .api_http
             .post(url)

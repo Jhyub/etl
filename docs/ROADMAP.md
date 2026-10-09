@@ -1,6 +1,6 @@
 # SNU eTL Assignment Submission CLI: Research and Roadmap
 
-- **Status:** Phases 0–2 implemented and verified
+- **Status:** Phases 0–2 implemented; the single-file submission flow was verified live
 - **Research date:** 2026-10-08
 - **Target:** a personal Unix CLI for submitting local files to SNU's new eTL (`myetl.snu.ac.kr`)
 
@@ -55,23 +55,23 @@ Command name: `etl`.
 etl auth login   # reads a token from stdin; prompts without echo on a terminal
 etl auth status  # checks the active token with one read-only request
 etl auth logout  # removes the saved token
-etl courses --json
+etl courses -j
+etl assignments 123 -j
 etl assignments --course-id 123 --json
-etl submit --course-id 123 --assignment-id 456 \
-  --file ./hw2.pdf --filename 2025-12345_hw2.pdf --dry-run
-etl submit --course-id 123 --assignment-id 456 \
-  --file ./hw2.pdf --filename 2025-12345_hw2.pdf --yes
-etl submit --assignment-url 'https://myetl.snu.ac.kr/courses/123/assignments/456' \
-  --file ./hw2.pdf --dry-run
+etl submit -c 123 -a 456 ./hw2.pdf -n 2025-12345_hw2.pdf -d
+etl submit --url 'https://myetl.snu.ac.kr/courses/123/assignments/456' \
+  ./report.pdf ./src.zip -n final-report.pdf source.zip -y
 ```
 
 Requirements:
 
 - Use numeric IDs in automation so duplicate or changing course titles cannot select the wrong destination.
-- Keep output stable: human-readable by default and JSON via `--json`; send diagnostics to stderr and define documented exit codes.
-- For submission, require `--file` and either both numeric IDs or `--assignment-url`. The URL form extracts IDs from an HTTPS eTL assignment page and does not change the fixed API host. `--dry-run` validates without uploading; `--yes` suppresses interactive confirmation for scripts.
+- Use human-readable output by default and JSON via `--json` or `-j`; send diagnostics to stderr and define documented exit codes. Submission JSON uses a `files` array of `{file, filename, size, content_type}` objects, including for one file; the former top-level `file` and `filename` fields are removed.
+- For submission, require one or more positional `PATH` arguments and either both numeric IDs or an assignment URL. `--url` and `-u` alias `--assignment-url`; the URL form extracts IDs from an HTTPS eTL assignment page and does not change the fixed API host. `--file` is no longer accepted.
+- `--filename` or `-n` accepts space-separated names after the paths. Supply one name per path in order, or omit the option to use local basenames. `-c`, `-a`, `-d`, `-y`, `-r`, and `-j` abbreviate `--course-id`, `--assignment-id`, `--dry-run`, `--yes`, `--resubmit`, and `--json`. `--dry-run` validates without uploading; `--yes` suppresses interactive confirmation for scripts.
+- Upload every file before making one final submission request with all file IDs. If any upload fails, no assignment submission is sent, although earlier uploaded files may remain in eTL.
 - Never silently retry a submission after an uncertain response. First query the latest submission state and distinguish success from an unsubmitted upload.
-- Report course and assignment names/IDs, local path, remote filename, submission attempt, timestamp, and a link or status when available.
+- Report course and assignment names/IDs, every local path and remote filename, submission attempt, timestamp, and a link or status when available.
 
 Authentication uses a single credentials file under the platform's local user data directory: `$XDG_DATA_HOME/etl/credentials` on Linux (default `~/.local/share/etl/credentials`), `~/Library/Application Support/etl/credentials` on macOS, and the `etl/credentials` directory under Local AppData on Windows. `etl auth login` validates the stdin token through one `GET /api/v1/courses?per_page=1` request before saving it. A piped token should contain one line; terminal input is hidden. On Unix, the app directory is mode `0700` and the file is mode `0600`.
 
@@ -111,15 +111,15 @@ Start with a line-oriented prompt interface; add a full-screen TUI only if the i
 ### Phase 1 — Read-only scriptable CLI (implemented)
 
 - Implemented the Rust 2024 `etl` binary with `clap`, blocking `reqwest`/Rustls, and `serde`/`serde_json`.
-- Reads `ETL_TOKEN` or the saved credentials file; provides `courses` and `assignments --course-id ID` with human and JSON output, pagination, and stable exit codes.
+- Reads `ETL_TOKEN` or the saved credentials file; provides `courses` and `assignments ID` (also `--course-id ID`) with human and JSON output, pagination, and stable exit codes.
 - Surfaces assignment type, due/lock information, allowed extensions, allowed attempts, current submission status, and IDs.
 
-### Phase 2 — Safe file submission (implemented and exercised once)
+### Phase 2 — Safe file submission (implemented; single-file flow exercised once)
 
-- Added `submit` with course/assignment IDs, local path, optional remote `--filename`, `--dry-run`, interactive confirmation, `--yes`, JSON output, and explicit `--resubmit` override.
-- Also accepts `--assignment-url` as an alternative destination input, extracting numeric IDs only from the expected eTL assignment-page path.
+- Added `submit` with course/assignment IDs, positional local paths, optional remote `--filename` names, `--dry-run`, interactive confirmation, `--yes`, JSON output, and explicit `--resubmit` override.
+- Also accepts `--assignment-url`, `--url`, or `-u` as an alternative destination input, extracting numeric IDs only from the expected eTL assignment-page path.
 - Refuses incompatible assignment types, disallowed extensions, and existing submissions by default. Does not alter the source file.
-- Implements Canvas's documented file-upload handshake, makes at most one final submission request per invocation, and verifies the resulting attempt and attachment.
+- Implements Canvas's documented file-upload handshake for each file, makes at most one final submission request with all uploaded IDs per invocation, and verifies the resulting attempt contains every attachment.
 - Submitted `src.zip` to PA1 after rechecking that the current submission remained unsubmitted. eTL returned a matching receipt for attempt 1. No second submission request was sent. The CLI does not automatically retry an ambiguous submission request.
 
 ### Phase 3 — Interactive selection (not implemented)
@@ -136,8 +136,8 @@ Start with a line-oriented prompt interface; add a full-screen TUI only if the i
 
 ## MVP acceptance criteria
 
-- A script can list courses and assignments as stable JSON and submit a specified local file using explicit IDs.
-- The user can override the uploaded filename without renaming the local file.
+- A script can list courses and assignments as JSON and submit one or more specified local files using explicit IDs.
+- The user can override each uploaded filename without renaming local files.
 - The CLI refuses incompatible submission types and locally detectable file restrictions before upload.
 - An interactive run can choose among cwd files, courses, and assignments and requires a final confirmation.
 - Success is reported only after eTL's submission record shows the new attempt/file; errors do not expose authentication material.
@@ -148,3 +148,4 @@ Start with a line-oriented prompt interface; add a full-screen TUI only if the i
 - Interactive course/assignment/file selection and a full-screen TUI remain Phase 3.
 - Packaging polish and shell completion remain Phase 4.
 - The standard file-upload and submission flow was confirmed end-to-end for Data Structures PA1. Other assignment types and courses have not been exercised; the CLI must stop rather than repeat a write when the result is uncertain.
+- The multi-file flow has not been exercised against eTL. It uses Canvas's documented repeated `submission[file_ids][]` parameters in one final request.
