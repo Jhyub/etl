@@ -1,5 +1,6 @@
 mod api;
 mod auth;
+mod get;
 mod models;
 
 use std::{
@@ -11,7 +12,7 @@ use std::{
 
 use api::{ApiError, Client};
 use auth::AuthError;
-use clap::{Parser, Subcommand};
+use clap::{ArgAction, Parser, Subcommand};
 use models::Assignment;
 use serde::Serialize;
 use url::Url;
@@ -50,6 +51,32 @@ enum Command {
             conflicts_with = "course_id"
         )]
         course_id_flag: Option<u64>,
+        #[arg(long, short = 'j')]
+        json: bool,
+    },
+    /// Download one or more files from eTL.
+    Get {
+        /// eTL file URLs. Use either positional URLs or -u/--url URLs.
+        #[arg(
+            value_name = "URL",
+            num_args = 1..,
+            required_unless_present = "urls_flag",
+            conflicts_with = "urls_flag"
+        )]
+        urls: Vec<String>,
+        /// eTL file URLs; repeat the option to provide multiple URLs.
+        #[arg(
+            long = "url",
+            short = 'u',
+            value_name = "URL",
+            num_args = 1..,
+            action = ArgAction::Append,
+            conflicts_with = "urls"
+        )]
+        urls_flag: Vec<String>,
+        /// Directory for downloaded files (defaults to the current directory).
+        #[arg(long, short = 'o', value_name = "DIR")]
+        output_dir: Option<PathBuf>,
         #[arg(long, short = 'j')]
         json: bool,
     },
@@ -114,6 +141,8 @@ enum AppError {
     Validation(String),
     #[error(transparent)]
     Api(#[from] ApiError),
+    #[error(transparent)]
+    Get(#[from] get::GetError),
     #[error("upload of {file} failed; no assignment submission was sent: {source}")]
     Upload {
         file: String,
@@ -141,6 +170,7 @@ impl AppError {
         match self {
             Self::Validation(_) | Self::Io(_) | Self::FileIo { .. } => 2,
             Self::Api(error) => error.exit_code(),
+            Self::Get(error) => error.exit_code(),
             Self::Upload { source, .. } => source.exit_code(),
             Self::Auth(error) => error.exit_code(),
             Self::Json(_) => 4,
@@ -200,6 +230,16 @@ fn run() -> Result<(), AppError> {
                 AppError::Validation("provide an assignment course ID".to_owned())
             })?;
             list_assignments(&authenticated_client()?, course_id, json)
+        }
+        Command::Get {
+            urls,
+            urls_flag,
+            output_dir,
+            json,
+        } => {
+            let urls = if urls.is_empty() { urls_flag } else { urls };
+            get::run_get(&authenticated_client()?, &urls, output_dir.as_deref(), json)?;
+            Ok(())
         }
         Command::Submit {
             course_id,

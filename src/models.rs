@@ -54,3 +54,16 @@ pub struct Attachment {
     #[serde(default)]
     pub size: Option<u64>,
 }
+
+#[derive(Debug, Deserialize)]
+pub struct RemoteFile {
+    pub id: u64,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub filename: Option<String>,
+    #[serde(default)]
+    pub size: Option<u64>,
+    #[serde(default)]
+    pub url: Option<String>,
+}

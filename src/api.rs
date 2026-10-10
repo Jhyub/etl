@@ -9,7 +9,7 @@ use reqwest::{
 use serde::{Deserialize, de::DeserializeOwned};
 use url::Url;
 
-use crate::models::{Assignment, Course};
+use crate::models::{Assignment, Course, RemoteFile};
 
 const BASE_URL: &str = "https://myetl.snu.ac.kr/";
 const API_HOST: &str = "myetl.snu.ac.kr";
@@ -24,6 +24,10 @@ pub enum ApiError {
     Http(StatusCode),
     #[error("eTL redirected the API request instead of returning JSON")]
     Redirect,
+    #[error("file download returned HTTP {0}")]
+    DownloadHttp(StatusCode),
+    #[error("file download redirected to an unsupported location")]
+    DownloadRedirect,
     #[error("invalid eTL API response: {0}")]
     InvalidResponse(String),
     #[error("could not decode eTL JSON response: {0}")]
@@ -57,6 +61,7 @@ pub struct Client {
     token: String,
     api_http: HttpClient,
     upload_http: HttpClient,
+    download_http: HttpClient,
     base_url: Url,
 }
 
@@ -73,11 +78,30 @@ impl Client {
             .connect_timeout(Duration::from_secs(20))
             .timeout(Duration::from_secs(600))
             .build()?;
+        // File URLs can redirect to object storage. This client has no bearer token.
+        let download_http = HttpClient::builder()
+            .redirect(Policy::custom(|attempt| {
+                let url = attempt.url();
+                if attempt.previous().len() < 10
+                    && url.scheme() == "https"
+                    && url.host_str().is_some()
+                    && url.username().is_empty()
+                    && url.password().is_none()
+                {
+                    attempt.follow()
+                } else {
+                    attempt.stop()
+                }
+            }))
+            .connect_timeout(Duration::from_secs(20))
+            .timeout(Duration::from_secs(600))
+            .build()?;
 
         Ok(Self {
             token,
             api_http,
             upload_http,
+            download_http,
             base_url: Url::parse(BASE_URL).map_err(|e| ApiError::InvalidResponse(e.to_string()))?,
         })
     }
@@ -116,6 +140,39 @@ impl Client {
         ))?;
         url.query_pairs_mut().append_pair("include[]", "submission");
         self.get_json(url)
+    }
+
+    pub fn get_file(&self, course_id: Option<u64>, file_id: u64) -> Result<RemoteFile, ApiError> {
+        let path = match course_id {
+            Some(course_id) => format!("api/v1/courses/{course_id}/files/{file_id}"),
+            None => format!("api/v1/files/{file_id}"),
+        };
+        self.get_json(self.api_url(&path)?)
+    }
+
+    pub fn open_download(&self, raw_url: &str) -> Result<Response, ApiError> {
+        let url = Url::parse(raw_url).map_err(|_| {
+            ApiError::InvalidResponse("file metadata contained an invalid download URL".to_owned())
+        })?;
+        if url.scheme() != "https"
+            || url.host_str().is_none()
+            || !url.username().is_empty()
+            || url.password().is_some()
+        {
+            return Err(ApiError::InvalidResponse(
+                "file metadata contained a non-HTTPS download URL".to_owned(),
+            ));
+        }
+
+        let response = self.download_http.get(url).send()?;
+        let status = response.status();
+        if status.is_redirection() {
+            return Err(ApiError::DownloadRedirect);
+        }
+        if status != StatusCode::OK {
+            return Err(ApiError::DownloadHttp(status));
+        }
+        Ok(response)
     }
 
     pub fn upload_submission_file(

@@ -2,7 +2,7 @@
 
 ## NAME
 
-`etl` — list SNU eTL courses and assignments, and submit local files to an assignment.
+`etl` — list SNU eTL courses and assignments, download files, and submit local files to an assignment.
 
 ## SYNOPSIS
 
@@ -12,6 +12,8 @@ etl auth status
 etl auth logout
 etl courses [-j | --json]
 etl assignments (ID | -c ID | --course-id ID) [-j | --json]
+etl get URL... [-o DIR | --output-dir DIR] [-j | --json]
+etl get (-u | --url) URL... [-o DIR | --output-dir DIR] [-j | --json]
 etl submit (--url URL | --assignment-url URL | -u URL |
             -c COURSE_ID -a ASSIGNMENT_ID)
            PATH... [-n NAME... | --filename NAME...]
@@ -60,6 +62,19 @@ When run in a terminal, `etl auth login` prompts without echoing the token. It a
 
 **`etl assignments ID`** lists assignments in a course. `-c ID` and `--course-id ID` are equivalent to the positional course ID. Use `-j` or `--json` for JSON output.
 
+**`etl get URL...`** downloads one or more files from eTL. Provide URLs as positional arguments, or use `-u URL...` / `--url URL...`; the two forms cannot be mixed. Both course file URLs such as `https://myetl.snu.ac.kr/courses/305832/files/9222279/download?wrap=1` and `/files/{file_id}` URLs are accepted, with or without a trailing `/download` path. Query parameters such as `wrap=1` are ignored when parsing the file ID. The command accepts only HTTPS URLs on `myetl.snu.ac.kr`.
+
+Files are saved in the current directory by default. Use `-o DIR` or `--output-dir DIR` to select a directory; it is created if needed. The local name comes from the Canvas file metadata. If that name already exists, `etl` appends a number such as ` (1)` before the extension instead of replacing the existing file. URLs are processed in order. If a download fails, the command stops and any earlier completed downloads remain saved.
+
+Use `-j` or `--json` for machine-readable output. On success, JSON contains a `files` array with `file_id`, optional `course_id`, absolute `saved_path`, and `bytes` for each download. In JSON mode, progress messages are written to stderr and the JSON result to stdout.
+
+## GET OPTIONS
+
+- `URL...`: one or more eTL file URLs. Supply these positionally or with `-u/--url`; do not mix the forms.
+- `-u, --url URL...`: optional URL form; repeat it to provide multiple URLs.
+- `-o, --output-dir DIR`: output directory. Defaults to the current directory.
+- `-j, --json`: write machine-readable results to stdout and progress messages to stderr.
+
 **`etl submit`** submits one or more regular local files to one assignment. Specify its destination with either a course and assignment ID or an assignment-page URL such as `https://myetl.snu.ac.kr/courses/123/assignments/456`. `--url` and `-u` are aliases for `--assignment-url`. The command accepts only assignment URLs on `https://myetl.snu.ac.kr`.
 
 List file paths as space-separated positional arguments. By default, each uploaded file keeps its local basename. To change the names shown in eTL, put `-n NAME...` or `--filename NAME...` **after the paths**, with exactly one name per path in the same order. Quote any path or name containing spaces. This does not rename local files.
@@ -83,6 +98,12 @@ Without `--yes` or `--dry-run`, `etl submit` shows the destination and every pat
 ```sh
 etl courses -j
 etl assignments 123
+
+etl get 'https://myetl.snu.ac.kr/courses/305832/files/9222279/download?wrap=1'
+etl get 'https://myetl.snu.ac.kr/courses/305832/files/9222279/download?wrap=1' \
+  'https://myetl.snu.ac.kr/files/9222280/download' --output-dir ./downloads -j
+etl get -u 'https://myetl.snu.ac.kr/files/9222280/download' \
+  -u 'https://myetl.snu.ac.kr/files/9222281/download'
 
 etl submit --url 'https://myetl.snu.ac.kr/courses/123/assignments/456' \
   ./report.pdf --dry-run
