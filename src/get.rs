@@ -175,6 +175,7 @@ fn download_one(
     reference: FileReference,
     destination_dir: &Path,
 ) -> Result<DownloadedFile, GetError> {
+    let progress = crate::progress::Progress::new(format!("Fetching file {}", reference.file_id));
     let file = api
         .get_file(reference.course_id, reference.file_id)
         .map_err(|source| GetError::Api {
@@ -196,6 +197,9 @@ fn download_one(
             "file metadata did not contain a safe filename".to_owned(),
         ),
     })?;
+    progress.label(format!("Downloading {filename}"));
+    progress.transfer(file.size);
+    let bar = progress.bar();
     let download_url = file.url.as_deref().ok_or_else(|| GetError::Api {
         file_id: reference.file_id,
         source: ApiError::InvalidResponse(
@@ -230,6 +234,7 @@ fn download_one(
             }
         }
         temporary.write_all(&buffer[..count])?;
+        crate::progress::Progress::update(&bar, file.size, bytes);
     }
 
     if let Some(expected) = file.size {
@@ -243,6 +248,7 @@ fn download_one(
     }
     temporary.as_file().sync_all()?;
     let saved_path = persist_without_overwrite(temporary, destination_dir, filename)?;
+    progress.finish(format!("Downloaded {filename}"));
 
     Ok(DownloadedFile {
         file_id: reference.file_id,

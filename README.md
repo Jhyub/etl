@@ -58,6 +58,8 @@ When run in a terminal, `etl auth login` prompts without echoing the token. It a
 
 ## COMMANDS
 
+`etl get` and `etl submit` show per-file progress on terminal stderr. Submission progress finishes after eTL verifies the receipt. Progress bars are hidden when stderr is redirected.
+
 **`etl courses`** lists active student courses. Use `-j` or `--json` for JSON output.
 
 **`etl assignments ID`** lists assignments in a course. `-c ID` and `--course-id ID` are equivalent to the positional course ID. Use `-j` or `--json` for JSON output.

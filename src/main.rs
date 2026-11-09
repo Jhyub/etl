@@ -2,6 +2,7 @@ mod api;
 mod auth;
 mod get;
 mod models;
+mod progress;
 
 use std::{
     fs,
@@ -494,6 +495,10 @@ fn submit(
 
     let mut file_ids = Vec::with_capacity(files.len());
     for file in &files {
+        let progress = progress::Progress::new(format!("Uploading {}", file.remote_filename));
+        progress.transfer(Some(file.size));
+        let bar = progress.bar();
+        let size = file.size;
         let file_id = api
             .upload_submission_file(
                 course_id,
@@ -502,16 +507,19 @@ fn submit(
                 &file.remote_filename,
                 file.size,
                 file.content_type,
+                move |bytes| progress::Progress::update(&bar, Some(size), bytes),
             )
             .map_err(|source| AppError::Upload {
                 file: file.path.display().to_string(),
                 source,
             })?;
+        progress.finish(format!("Uploaded {}", file.remote_filename));
         file_ids.push(file_id);
     }
 
     // The upload itself does not create a submission. Check once more before
     // the single submission POST; never automatically repeat that POST.
+    let progress = progress::Progress::new("Submitting and verifying".to_owned());
     let before_submit = api.get_assignment(course_id, assignment_id)?;
     validate_assignment(&before_submit, &files, resubmit)?;
     api.submit_file_ids(course_id, assignment_id, &file_ids)?;
@@ -532,6 +540,8 @@ fn submit(
             "the submission request was sent once, but eTL did not return a receipt containing every file; do not retry automatically".to_owned(),
         ));
     }
+
+    progress.finish("Submission verified".to_owned());
 
     let submission = submission.expect("verified submission exists");
     let output = SubmitOutput {

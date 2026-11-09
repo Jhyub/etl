@@ -1,4 +1,10 @@
-use std::{collections::BTreeMap, fs::File, path::Path, time::Duration};
+use std::{
+    collections::BTreeMap,
+    fs::File,
+    io::{self, Read},
+    path::Path,
+    time::Duration,
+};
 
 use reqwest::{
     StatusCode,
@@ -55,6 +61,45 @@ struct UploadSpec {
 #[derive(Debug, Deserialize)]
 struct UploadedFile {
     id: u64,
+}
+
+struct CountingReader<R, F> {
+    inner: R,
+    progress: F,
+    bytes: u64,
+}
+
+#[cfg(test)]
+mod progress_tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn counting_reader_preserves_bytes_and_reports_progress() {
+        let updates = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&updates);
+        let mut reader = CountingReader {
+            inner: &b"abcdef"[..],
+            progress: move |bytes| recorded.lock().unwrap().push(bytes),
+            bytes: 0,
+        };
+        let mut first = [0; 2];
+        reader.read_exact(&mut first).unwrap();
+        let mut rest = Vec::new();
+        reader.read_to_end(&mut rest).unwrap();
+        assert_eq!(&first, b"ab");
+        assert_eq!(rest, b"cdef");
+        assert_eq!(&*updates.lock().unwrap(), &[2, 6, 6]);
+    }
+}
+
+impl<R: Read, F: Fn(u64)> Read for CountingReader<R, F> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let count = self.inner.read(buffer)?;
+        self.bytes = self.bytes.saturating_add(count as u64);
+        (self.progress)(self.bytes);
+        Ok(count)
+    }
 }
 
 pub struct Client {
@@ -175,7 +220,7 @@ impl Client {
         Ok(response)
     }
 
-    pub fn upload_submission_file(
+    pub fn upload_submission_file<F: Fn(u64) + Send + 'static>(
         &self,
         course_id: u64,
         assignment_id: u64,
@@ -183,6 +228,7 @@ impl Client {
         remote_filename: &str,
         size: u64,
         content_type: &str,
+        progress: F,
     ) -> Result<u64, ApiError> {
         let url = self.api_url(&format!(
             "api/v1/courses/{course_id}/assignments/{assignment_id}/submissions/self/files"
@@ -220,7 +266,12 @@ impl Client {
                 value => upload_form = upload_form.text(key, multipart_value(value)),
             }
         }
-        let part = multipart::Part::reader_with_length(file, size)
+        let reader = CountingReader {
+            inner: file,
+            progress,
+            bytes: 0,
+        };
+        let part = multipart::Part::reader_with_length(reader, size)
             .file_name(remote_filename.to_owned())
             .mime_str(content_type)?;
         upload_form = upload_form.part("file", part);
